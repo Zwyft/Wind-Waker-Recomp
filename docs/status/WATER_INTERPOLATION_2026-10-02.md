@@ -25,8 +25,8 @@ matrix-skinned geometry retain their current attributes.
 The reproducible input is RecompCore
 `8ab24daee9c641634fda5cac30389ad4b2cfda5e` plus
 `patches/recompcore/0113-interpolate-indexed-cpu-deformed-vertices.patch`.
-The current `config/recompcore-patches.json` selects patch `0150`, combining
-this delta with the Windows lava post-transform fix (`0120`) and stable HUD (`0140`), and records its
+The current `config/recompcore-patches.json` selects patch `0170`, combining
+this delta with the Windows lava post-transform fix (`0120`) and smooth HUD matching (`0160`), and records its
 checksum. Bootstrap, the builder, local PGO training and desktop/iOS CMake
 apply the same verified delta. The
 helper accepts a clean checkout or that exact delta and refuses other tracked

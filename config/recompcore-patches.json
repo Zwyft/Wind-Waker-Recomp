@@ -1,7 +1,7 @@
 {
   "base_sha": "8ab24daee9c641634fda5cac30389ad4b2cfda5e",
-  "patch": "patches/recompcore/0150-mac-water-lava-and-stable-hud.patch",
-  "sha256": "daf5cbca2ce516729da47b60e4275f4e3bdbb0df38b2244b8ebe6e5e79f48ee8",
+  "patch": "patches/recompcore/0170-mac-water-lava-and-smooth-hud.patch",
+  "sha256": "e1e89b059cd4d175fee78260c3671a3ffdafbbf8d1244e18043c15ba1bd221d5",
   "includes": [
     {
       "patch": "patches/recompcore/0113-interpolate-indexed-cpu-deformed-vertices.patch",
@@ -15,6 +15,10 @@
     {
       "patch": "patches/recompcore/0140-keep-screen-space-hud-out-of-frame-matching.patch",
       "purpose": "repeat screen-space HUD intact without matching unrelated digits or hearts"
+    },
+    {
+      "patch": "patches/recompcore/0160-interpolate-screen-sprites-by-local-artwork-and-bounds.patch",
+      "purpose": "restore smooth screen sprites with artwork identity and one-to-one local bounds matching, superseding the broad HUD exclusion"
     }
   ]
 }
