@@ -2,15 +2,15 @@
 
 > [!IMPORTANT]
 > **Wind Waker Recomp is moving to [BlueWake](https://github.com/chrissotraidis/bluewake).**
-> Elliott Tate and Chris Sotraidis are combining this fork with BlueWake, the project it started from,
-> and maintaining it together there. Elliott's work is being merged into BlueWake with his authorship.
+> This fork and BlueWake, the project it started from, are becoming one project, maintained together by
+> Elliott and Chris. Elliott's work is being brought into BlueWake with his authorship.
 >
-> - **Please report bugs and request features in [BlueWake's issues](https://github.com/chrissotraidis/bluewake/issues)**,
->   not here. Say whether you use a Wind Waker Recomp release or a BlueWake build.
+> - **Please report bugs and request features on [BlueWake](https://github.com/chrissotraidis/bluewake/issues)**,
+>   not here. Mention whether you use a Wind Waker Recomp release or a BlueWake build.
 > - Open issues and pull requests here will be moved to BlueWake with a link back.
-> - Your Windows saves carry over: both keep them in `%APPDATA%\BlueWake`.
+> - On Windows, saves carry over: both keep them in `%APPDATA%\BlueWake`.
 > - Questions: the [Discord](https://discord.gg/xwHfUD2bxW), shared by both projects.
-> - This repository stays available during the move. Details: [migration log](https://github.com/chrissotraidis/bluewake/blob/main/docs/WIND_WAKER_RECOMP_MIGRATION.md).
+> - Details of the move: [migration log](https://github.com/chrissotraidis/bluewake/blob/main/docs/WIND_WAKER_RECOMP_MIGRATION.md).
 
 Source fork of [BlueWake](https://github.com/chrissotraidis/bluewake), based on upstream commit
 [`31b8a722fee3`](https://github.com/chrissotraidis/bluewake/commit/31b8a722fee33457585df336093f70eea07f6382).
