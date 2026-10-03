@@ -291,7 +291,9 @@ with, are read from your disc. None of it is included.
 ### Which version of the game works?
 
 Only the GameCube USA release, `GZLE01` revision 0. The app checks the disc and refuses others. The
-Wii U *Wind Waker HD* is a different game and is not supported.
+Wii U *Wind Waker HD* is a different game and cannot be used as the game disc.
+You can optionally [import its compatible textures from your own HD disc](docs/WWHD_TEXTURES.md)
+into a replacement pack while continuing to play from your GameCube disc.
 
 ### Is this an emulator?
 

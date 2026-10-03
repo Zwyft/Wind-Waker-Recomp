@@ -12,3 +12,11 @@ builds from its own copy, https://github.com/elliotttate/RecompCore, branch `blu
 8ab24da: that tree plus 0098 to 0112, with DolRecomp at https://github.com/elliotttate/DolRecomp
 (b8b5345, 5c91d6e plus patches/dolrecomp/0019). The Builder fetches it at the commit pinned in
 `scripts/builder/profiles/bluewake.sh`; see docs/status/DEVICE_BUILD.md.
+
+The Mac checkout also applies the exact delta recorded in
+`config/recompcore-patches.json`. Patch 0150 combines the indexed, CPU-deformed
+vertex interpolation fix from 0113, the stable screen-space HUD from 0140,
+and the Windows lava fix from 0120
+(RecompCore `81d7345`, with the test's line endings corrected in `7c62903`).
+The combined patch applies to the pinned `8ab24da` base. Bootstrap, desktop/iOS
+CMake and the builder verify its checksum and reject unrelated dependency edits.
