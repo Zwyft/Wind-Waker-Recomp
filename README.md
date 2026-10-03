@@ -66,10 +66,12 @@ this is a static recompilation with a hardware compatibility layer, not an "emul
 What Wind Waker Recomp adds to the game. Most of it is an option in the settings (F1), so you can play
 with as much or as little of it as you like.
 
-**New in 0.3.0 (Windows):** the game runs about 13 percent faster, slower CPUs no longer play in slow
-motion with frame interpolation on (it steps aside until the CPU can keep up), and frame interpolation
-can match the display, up to 240 FPS. **New in 0.2.0:** [save states](#save-states) and
-[climbing any wall](#climb-any-wall) on Windows and Mac.
+**New in 0.4.0 (Windows):** the lava in Dragon Roost Cavern glows in its colours again (it drew white),
+and the game's own vibration reaches your controller, shaped by its strength, with Xbox and DualSense
+trigger feedback. **New in 0.3.0 (Windows):** the game runs about 13 percent faster, slower CPUs no
+longer play in slow motion with frame interpolation on, and frame interpolation can match the display,
+up to 240 FPS. **New in 0.2.0:** [save states](#save-states) and [climbing any wall](#climb-any-wall) on
+Windows and Mac.
 
 ### Picture and frame rate
 
@@ -259,7 +261,8 @@ game's code. Details are in [docs/MODS.md](docs/MODS.md).
 - **Laptops with integrated graphics** (such as Intel UHD) can run slowly. Turn Smooth Motion off (F10)
   and set **Render resolution** to 1x: Smooth Motion draws each frame a second time to show 60 FPS.
   Before 0.3.0, Smooth Motion on a CPU with few cores could also slow the game itself down.
-- **Mac:** lava in Dragon Roost Cavern's areas renders as flat orange instead of its bright pattern.
+- **Mac:** lava in Dragon Roost Cavern's areas renders as flat orange instead of its bright pattern. Windows
+  0.4.0 fixes it (it drew white there); the Mac gets the fix with its next build.
 - **120 FPS** needs a display of 100 Hz or more (on a 60 Hz display Windows shows 60 instead), and the
   busiest scenes can dip below 120. **Match the display** (up to 240 FPS) needs a fast PC, and has been
   tested with a simulated 240 Hz display, not yet a real one.
