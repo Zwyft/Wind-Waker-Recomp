@@ -1,5 +1,17 @@
 # Wind Waker Recomp
 
+> [!IMPORTANT]
+> **Wind Waker Recomp is moving to [BlueWake](https://github.com/chrissotraidis/bluewake).**
+> Elliott Tate and Chris Sotraidis are combining this fork with BlueWake, the project it started from,
+> and maintaining it together there. Elliott's work is being merged into BlueWake with his authorship.
+>
+> - **Please report bugs and request features in [BlueWake's issues](https://github.com/chrissotraidis/bluewake/issues)**,
+>   not here. Say whether you use a Wind Waker Recomp release or a BlueWake build.
+> - Open issues and pull requests here will be moved to BlueWake with a link back.
+> - Your Windows saves carry over: both keep them in `%APPDATA%\BlueWake`.
+> - Questions: the [Discord](https://discord.gg/xwHfUD2bxW), shared by both projects.
+> - This repository stays available during the move. Details: [migration log](https://github.com/chrissotraidis/bluewake/blob/main/docs/WIND_WAKER_RECOMP_MIGRATION.md).
+
 Source fork of [BlueWake](https://github.com/chrissotraidis/bluewake), based on upstream commit
 [`31b8a722fee3`](https://github.com/chrissotraidis/bluewake/commit/31b8a722fee33457585df336093f70eea07f6382).
 The app and build scripts retain the BlueWake name and bundle identifier. Upstream license and
@@ -43,7 +55,7 @@ credits are preserved below and in [RIGHTS_AND_LICENSES.md](RIGHTS_AND_LICENSES.
 > documentation and debugging. The status log records what has actually been checked, and on what.
 
 **Questions or bugs?** Join the [Discord](https://discord.gg/xwHfUD2bxW) or
-[open an issue](https://github.com/elliotttate/Wind-Waker-Recomp/issues).
+[open an issue on BlueWake](https://github.com/chrissotraidis/bluewake/issues).
 
 [Features](#features) · [Controls](#controls) · [Windows](#windows) · [Mac](#mac) ·
 [iPhone and iPad](#iphone-and-ipad) · [Performance](#performance) · [Mods](#mods) ·
