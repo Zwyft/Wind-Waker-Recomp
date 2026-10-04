@@ -1,0 +1,188 @@
+name: iOS Legacy (iOS 14.4)
+
+# Builds BlueWake for a legacy iPad. This is deliberately a separate workflow
+# from anything Android: the two builds share almost nothing. The Android side
+# is a Gradle + CMake + NDK build on this repository's own sources; this one
+# drives scripts/builder/build.sh, the macOS-only builder, and needs Xcode,
+# codesign and a provisioning profile.
+#
+# Why a separate deployment target is worth having. scripts/builder/build.sh
+# pins -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 and -mcpu=apple-a13, which is what
+# upstream BlueWake targets. The iPad this exists for runs iOS 14.4.2, and a
+# 17.0-pinned binary will not launch there: the kernel refuses to load a Mach-O
+# whose LC_BUILD_VERSION minos exceeds the running OS. DEPLOYMENT_TARGET below
+# overrides the pin.
+#
+# What this cannot fix. Xcode 26 (what macos-latest ships) refuses any
+# deployment target below iOS 15, and the pinned Dawn package
+# (encounter/dawn v20260618.032059, dawn-ios-arm64) is compiled with
+# LC_BUILD_VERSION minos=14.0, so Dawn itself is fine, but SDL3's vendored
+# xcframework and the app's own Objective-C++ will need -mios-version-min
+# handling. This workflow pins an older Xcode on purpose; if the toolchain
+# still refuses, that shows up as a link or configure failure rather than an
+# app that silently fails to install.
+#
+# Inputs:
+#   deployment_target  iOS version to pin (default 14.4)
+#   device_cpu         -mcpu for the game module (default apple-a11, the oldest
+#                       that runs iOS 14.4; apple-a13 targets A13+ only)
+#   disc_url           https URL to a GZLE01 USA rev 0 disc image. It is NOT
+#                       put in this repository: the audit workflow fails any
+#                       tracked *.iso, and the disc is the user's to supply.
+#                       Use a private URL or an Actions artifact.
+#
+# Output: BlueWake-ios14.ipa, unsigned, for sideloading with AltStore or
+# Sideloadly against your own Apple ID. Signing with a paid team is not done
+# here because a distribution certificate has no business in a public repo's
+# secrets.
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_target:
+        description: 'Minimum iOS version to target (e.g. 14.4)'
+        required: false
+        default: '14.4'
+      device_cpu:
+        description: '-mcpu for the game module (apple-a11 .. apple-a14)'
+        required: false
+        default: 'apple-a11'
+      disc_url:
+        description: 'HTTPS URL of the GZLE01 USA rev 0 disc image'
+        required: true
+      ref:
+        description: 'Branch or tag to build'
+        required: false
+        default: 'main'
+
+concurrency:
+  group: ios-legacy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build IPA for iOS ${{ github.event.inputs.deployment_target }}
+    # macos-14 is the newest image that still ships an Xcode old enough to
+    # accept a sub-iOS-15 deployment target. macos-15 and later default to
+    # Xcode 26, which hard-errors with "minimum deployment target is iOS 15".
+    runs-on: macos-14
+    timeout-minutes: 360
+
+    env:
+      DEPLOYMENT_TARGET: ${{ github.event.inputs.deployment_target }}
+      DEVICE_CPU: ${{ github.event.inputs.device_cpu }}
+      # The builder checks out its own dependencies under ref/ and refuses to
+      # run if the tree is not clean, so give it a scratch checkout path.
+      BUILDER_OUT: ${{ github.workspace }}/build/device
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Select an Xcode that accepts the deployment target
+        run: |
+          set -euo pipefail
+          # List what this image actually has, so the failure mode is legible.
+          ls /Applications | grep -i '^Xcode' || true
+          sudo xcode-select -s /Applications/Xcode_15.4.app
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Report the toolchain floor
+        run: |
+          set -euo pipefail
+          echo "deployment_target=$DEPLOYMENT_TARGET device_cpu=$DEVICE_CPU"
+
+      - name: Fetch the disc image
+        env:
+          DISC_URL: ${{ github.event.inputs.disc_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/disc"
+          # -L because the URL is commonly a redirect to object storage.
+          curl -fsSL -o "$RUNNER_TEMP/disc/GZLE01.iso" "$DISC_URL"
+          ls -la "$RUNNER_TEMP/disc/GZLE01.iso"
+          # The builder validates this itself; failing here saves 40 minutes of
+          # dependency fetching before it discovers a wrong image.
+          shasum -a 256 "$RUNNER_TEMP/disc/GZLE01.iso"
+
+      - name: Cache the dependency fetch
+        uses: actions/cache@v4
+        with:
+          path: ref/recompcore
+          key: ios-legacy-recompcore-${{ github.event.inputs.ref }}
+        # A cold run fetches the pinned RecompCore, DolRecomp and Dawn tarball;
+        # warm runs skip it. The composite itself is not cached: it is ~877 MB
+        # of generated C and the GitHub cache limit is 10 GB per repo.
+
+      - name: Build the app and the IPA
+        run: |
+          set -euo pipefail
+          # --deployment-target and --device-cpu are the whole point of this
+          # workflow. Both are passed straight through to the two cmake
+          # configures in the builder's profile.
+          #
+          # --no-pgo skips the bundled profiles: they were trained on an
+          # iPad Pro M2 at iOS 17, and a profile that does not match the
+          # source it is applied to is discarded with a warning anyway.
+          # --no-train (implied by --no-pgo) also removes the 20 minutes of
+          # local training playback a Mac would do, which a CI runner cannot.
+          scripts/builder/build.sh "$RUNNER_TEMP/disc/GZLE01.iso" \
+            --out build/device \
+            --device-cpu "$DEVICE_CPU" \
+            --deployment-target "$DEPLOYMENT_TARGET" \
+            --ipa build/device/BlueWake-ios14.ipa \
+            --no-pgo \
+            2>&1 | tee build/device/builder.log
+
+      - name: Show the tail of the builder log on failure
+        if: failure()
+        run: tail -80 build/device/builder.log || true
+
+      - name: Report what the binary actually claims
+        if: always()
+        run: |
+          set -euo pipefail
+          app=build/device/app/BlueWake.app
+          bin="$app/BlueWake"
+          if [ -f "$bin" ]; then
+            echo "=== LC_BUILD_VERSION of the app binary ==="
+            otool -l "$bin" | grep -A4 LC_BUILD_VERSION || true
+            echo "=== Info.plist MinimumOSVersion ==="
+            /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' \
+              "$app/Info.plist" || true
+          else
+            echo "no app binary at $bin"
+          fi
+
+      - name: Verify the IPA carries a module and a plist
+        if: always()
+        run: |
+          set -euo pipefail
+          ipa=build/device/BlueWake-ios14.ipa
+          [ -f "$ipa" ] || { echo "no IPA produced"; exit 0; }
+          ls -la "$ipa"
+          unzip -l "$ipa" | grep -E 'Info.plist|\.dylib' || true
+          # The audit pattern list forbids *.ipa in the tree, so the artifact
+          # is the only copy; upload it even on failure so a broken build can
+          # be diagnosed from the same run.
+
+      - name: Upload the IPA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlueWake-ios${{ github.event.inputs.deployment_target }}
+          path: build/device/BlueWake-ios14.ipa
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: builder-logs
+          path: build/device/logs
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,0 +1,245 @@
+name: Android PGO (scoped)
+
+# Builds the instrumented arm64 game module for profile-guided optimization,
+# and optionally the profile-optimized module once a profile has been
+# collected on a phone. This exists because the instrumented compile is the
+# single slowest thing in the Android build.
+#
+# Why CI. On a four-core box with 11 GB of RAM, compiling ten instrumented
+# chunks takes over ninety minutes each: three concurrent compiles of a 1.9 MB
+# generated C file contend for memory bandwidth and the box has no room to
+# spare. GitHub's Linux runners have more cores and considerably more memory,
+# so the same work lands in a fraction of the time. The other 738 chunks are
+# compiled without instrumentation.
+#
+# Why the disc is an input. The composite (build/composite-src, 877 MB of
+# generated C) is derived from the player's own disc image and is deliberately
+# not in this repository: scripts/audit_repo.sh fails any tracked *.iso, *.dol,
+# *.rel or build/ path. The runner therefore takes a disc_url and runs the same
+# extract, translate and generate steps the local builder runs. Nothing
+# game-derived is committed here or written to this repository's storage.
+#
+# This workflow does NOT sign anything. It produces an unsigned .so artifact
+# for the player to drop into the APK; a distribution certificate has no
+# business in a public repository's secrets.
+#
+# Inputs:
+#   disc_url    HTTPS URL of a GZLE01 USA rev 0 disc image, somewhere private.
+#   profile_url Optional HTTPS URL of an llvm .profdata. When given, the
+#               profile-optimized module is built and uploaded instead of the
+#               instrumented one.
+#
+# Before running this: the runner needs ref/recompcore, which the builder
+# fetches on first use. There is no network path for that here, so run
+# scripts/android/build.sh --source-only once locally and push ref/ to a
+# private location, or expect the "Fetch the pinned sources" step to fail and
+# tell you what it needs. That step is deliberately explicit about this rather
+# than guessing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      disc_url:
+        description: 'HTTPS URL of the GZLE01 USA rev 0 disc image'
+        required: true
+      profile_url:
+        description: 'Optional HTTPS URL of a .profdata to optimize against'
+        required: false
+        default: ''
+
+concurrency:
+  group: android-pgo-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  module:
+    name: Build the game module (scoped PGO)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      # Matches the NDK the local Android build uses (29.0.14206865); r27c is
+      # the closest published tag. Bump if the module fails to link.
+      NDK_VERSION: r27c
+      ABI: arm64-v8a
+      MODULE: gGZLE01_recomp
+      OUT: build/device
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up the NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build git curl python3 unzip
+          cmake --version
+          ninja --version
+
+      - name: Cache the pinned sources and the generated composite
+        uses: actions/cache@v4
+        with:
+          path: |
+            ref/recompcore
+            build/device/composite-src
+          key: pgo-inputs-${{ hashFiles('config/recompcore-patches.json') }}
+        # Warm runs skip the dependency fetch, the extract, the translate and the
+        # composite generation, and go straight to compiling. The cache key is
+        # the RecompCore patch list: the disc is pinned to one revision, so the
+        # only things that can invalidate the generated tree are the translator
+        # pin and the composite generator.
+
+      - name: Fetch the pinned RecompCore sources
+        # The builder fetches these itself on first run; there is no offline
+        # copy in this repository. If this step is skipped by a warm cache this
+        # is a no-op.
+        run: |
+          set -euo pipefail
+          if [ -d ref/recompcore/GXRuntime ]; then
+            echo "ref/recompcore present (cached)"
+          else
+            echo "::error::ref/recompcore is not present and this workflow cannot fetch it."
+            echo "::error::Run scripts/android/build.sh --source-only on a machine that has it, then"
+            echo "::error::add ref/recompcore to the cache (or to a private git submodule) before retrying."
+            exit 1
+          fi
+
+      - name: Fetch the disc image
+        env:
+          DISC_URL: ${{ github.event.inputs.disc_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/disc"
+          # -L because the URL is usually a redirect to object storage.
+          curl -fsSL -o "$RUNNER_TEMP/disc/GZLE01.iso" "$DISC_URL"
+          ls -la "$RUNNER_TEMP/disc/GZLE01.iso"
+          shasum -a 256 "$RUNNER_TEMP/disc/GZLE01.iso"
+
+      - name: Extract, translate and generate the composite
+        run: |
+          set -euo pipefail
+          if [ -f "$OUT/composite-src/generated.h" ]; then
+            echo "composite already cached; skipping extract, translate and generate"
+            exit 0
+          fi
+          # The same three functions the local builder runs, in the same order,
+          # with the same arguments (scripts/builder/profiles/bluewake.sh).
+          # profile_extract verifies the disc is GZLE01 revision 0 and refuses
+          # anything else, so a wrong image fails here in seconds.
+          clang -O2 -o "$RUNNER_TEMP/disc_extract" \
+            scripts/ios/disc_extract.c apple/ios/src/disc_import.c apple/ios/src/disc_sha1.c \
+            -Iapple/ios/src
+          "$RUNNER_TEMP/disc_extract" "$RUNNER_TEMP/disc/GZLE01.iso" "$OUT/game"
+          [ "$(ls "$OUT/game/rels" | wc -l | tr -d ' ')" = 415 ] \
+            || { echo "::error::expected 415 RELs"; exit 1; }
+
+          cmake -S ref/recompcore/DolRecomp -B "$OUT/dolrecomp" -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$OUT/dolrecomp" --target dolrecomp -j "$(nproc)"
+          rm -rf "$OUT/translated" && mkdir -p "$OUT/translated/dol" "$OUT/translated/rels"
+          "$OUT/dolrecomp/dolrecomp" --gamecube --backend c --cpu gekko \
+            --partition-instructions 4096 "$OUT/game/main.dol" "$OUT/translated/dol" -j "$(nproc)"
+          "$OUT/dolrecomp/dolrecomp" --gamecube --backend c --cpu gekko \
+            --rel-base 0xC0400000 "$OUT/game/rels" "$OUT/translated/rels" -j "$(nproc)"
+
+          rm -rf "$OUT/composite-src"
+          python3 scripts/generate_composite.py \
+            --dol-dir "$OUT/translated/dol/generated" \
+            --rels-dir "$OUT/translated/rels/generated/rels" \
+            --rels-bin-dir "$OUT/game/rels" \
+            --main-dol "$OUT/game/main.dol" \
+            --output-dir "$OUT/composite-src"
+          ls "$OUT/composite-src" | head
+
+      - name: Configure the module
+        env:
+          PROFILE_URL: ${{ github.event.inputs.profile_url }}
+        run: |
+          set -euo pipefail
+          # Either COMPOSITE_PGO_INSTRUMENT_DIR (collection) or
+          # COMPOSITE_PGO_PROFILE_DIR (optimized), never both. Both are applied
+          # per source in cmake/composite/CMakeLists.txt, so only the ten hot
+          # chunks carry them and the other 738 compile as a plain -O2 build.
+          extra=()
+          if [ -n "$PROFILE_URL" ]; then
+            curl -fsSL -o "$RUNNER_TEMP/profile.profdata" "$PROFILE_URL"
+            extra=(-DCOMPOSITE_PGO_PROFILE_DIR="$RUNNER_TEMP")
+          else
+            extra=(-DCOMPOSITE_PGO_INSTRUMENT_DIR=/data/data/dev.bluewake.bluewake/files/BlueWake/pgo)
+          fi
+          cmake -S cmake/composite -B "$OUT/composite-pgo" -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=$ABI -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGAME_ID=GZLE01 \
+            -DCOMPOSITE_DIR="$PWD/$OUT/composite-src" \
+            -DGXRUNTIME_DIR="$PWD/ref/recompcore/GXRuntime" \
+            -DABI_DIR="$PWD/ref/recompcore/Source/Core/Core/PowerPC/StaticRecomp" \
+            -DCOMPOSITE_OPTIMIZATION_LEVEL=2 \
+            "${extra[@]}" 2>&1 | tee configure.log
+
+      - name: Build the module
+        run: |
+          set -euo pipefail
+          # The whole point of this workflow: -j $(nproc) on a runner with more
+          # cores and more memory than a laptop, so the ten instrumented chunks
+          # are minutes each rather than ninety.
+          cmake --build "$OUT/composite-pgo" --target "$MODULE" -j "$(nproc)" \
+            2>&1 | tee build.log
+          ls -la "$OUT/composite-pgo/$MODULE.so"
+
+      - name: Strip and package the module
+        env:
+          PROFILE_URL: ${{ github.event.inputs.profile_url }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PROFILE_URL" ]; then kind=pgo; else kind=instrumented; fi
+          strip_bin="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          install -m 644 "$OUT/composite-pgo/$MODULE.so" "$OUT/$MODULE-stripped.so"
+          # --strip-debug drops the ~740 MB of debug info and keeps the symbol
+          # table, which the audit and any later profile step need for function
+          # names. This is the same file the APK ships, at a few hundred MB
+          # rather than over a gigabyte.
+          "$strip_bin" --strip-debug "$OUT/$MODULE-stripped.so"
+          mkdir -p "$OUT/pkg"
+          cp "$OUT/$MODULE-stripped.so" "$OUT/pkg/lib$MODULE.so"
+          tar -czf "$OUT/$MODULE-$kind.tar.gz" -C "$OUT/pkg" "lib$MODULE.so"
+          ls -la "$OUT/$MODULE-stripped.so" "$OUT/$MODULE-$kind.tar.gz"
+
+      - name: Summary
+        if: always()
+        env:
+          PROFILE_URL: ${{ github.event.inputs.profile_url }}
+        run: |
+          {
+            echo "### Android PGO module"
+            echo ""
+            echo "- variant: $([ -n "$PROFILE_URL" ] && echo 'profile-optimized' || echo instrumented)"
+            echo "- profile: $([ -n "$PROFILE_URL" ] && echo 'supplied' || echo 'none (collection build)')"
+            echo "- unstripped: $(stat -c %s "$OUT/composite-pgo/$MODULE.so" 2>/dev/null || echo n/a) bytes"
+            echo "- stripped:   $(stat -c %s "$OUT/$MODULE-stripped.so" 2>/dev/null || echo n/a) bytes"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the module
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.MODULE }}-${{ inputs.profile_url != '' && 'pgo' || 'instrumented' }}
+          path: ${{ env.OUT }}/${{ env.MODULE }}-*.tar.gz
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgo-logs-${{ github.run_id }}
+          path: |
+            configure.log
+            build.log
+          if-no-files-found: ignore
+          retention-days: 7
