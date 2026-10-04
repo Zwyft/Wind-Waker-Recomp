@@ -1,47 +1,54 @@
 name: Android PGO (scoped)
 
 # Builds the instrumented arm64 game module for profile-guided optimization,
-# and optionally the profile-optimized module once a profile has been
-# collected on a phone. This exists because the instrumented compile is the
-# single slowest thing in the Android build.
+# and the profile-optimized module once a profile has been collected on a phone.
 #
-# Why CI. On a four-core box with 11 GB of RAM, compiling ten instrumented
-# chunks takes over ninety minutes each: three concurrent compiles of a 1.9 MB
-# generated C file contend for memory bandwidth and the box has no room to
-# spare. GitHub's Linux runners have more cores and considerably more memory,
-# so the same work lands in a fraction of the time. The other 738 chunks are
-# compiled without instrumentation.
+# Why CI. The instrumented compile is the slowest step in the Android build. On
+# a four-core box with 11 GB of RAM, three concurrent compiles of a 1.9 MB
+# generated chunk ran for over ninety minutes each: they contend for memory
+# bandwidth and there is no room to spare. A runner has more cores and more
+# memory, so the same ten chunks land in a fraction of the time. The other 738
+# chunks compile without instrumentation, from a plain -O2 build.
 #
-# Why the disc is an input. The composite (build/composite-src, 877 MB of
-# generated C) is derived from the player's own disc image and is deliberately
-# not in this repository: scripts/audit_repo.sh fails any tracked *.iso, *.dol,
-# *.rel or build/ path. The runner therefore takes a disc_url and runs the same
-# extract, translate and generate steps the local builder runs. Nothing
-# game-derived is committed here or written to this repository's storage.
+# Why there is no disc here. The composite source (build/device/composite-src,
+# 877 MB of generated C) is derived from the player's own disc image and is
+# deliberately not in this repository - scripts/audit_repo.sh fails any tracked
+# *.iso, *.dol, *.rel or build/ path. Rather than make the player host a 1.3 GB
+# copyrighted image somewhere a runner can fetch it, this workflow caches the
+# composite itself:
 #
-# This workflow does NOT sign anything. It produces an unsigned .so artifact
-# for the player to drop into the APK; a distribution certificate has no
-# business in a public repository's secrets.
+#   first run    needs disc_url, extracts, translates, generates the composite,
+#                and caches ref/recompcore plus the composite tree
+#   later runs   the cache hit skips all of that and goes straight to compiling
+#
+# A GitHub Actions cache holds 10 GB per repository and this is well under it.
+# ref/recompcore (113 MB) is cached in the same entry and is fetched from its
+# public upstream on a cold run, so nothing game-derived ever needs to be stored
+# on purpose - only as a side effect of the cache.
+#
+# This workflow does not sign anything. It produces an unsigned .so artifact to
+# drop into the APK; a distribution certificate has no business in a public
+# repository's secrets.
 #
 # Inputs:
-#   disc_url    HTTPS URL of a GZLE01 USA rev 0 disc image, somewhere private.
+#   disc_url    Required ONLY on the first run, to seed the composite cache.
+#               Leave blank on every run after that. If it is blank and the
+#               cache is cold, this job fails with an explanation rather than
+#               silently doing nothing.
 #   profile_url Optional HTTPS URL of an llvm .profdata. When given, the
-#               profile-optimized module is built and uploaded instead of the
-#               instrumented one.
+#               profile-optimized module is built instead of the instrumented
+#               one. See the note at the end about what it is worth.
 #
-# Before running this: the runner needs ref/recompcore, which the builder
-# fetches on first use. There is no network path for that here, so run
-# scripts/android/build.sh --source-only once locally and push ref/ to a
-# private location, or expect the "Fetch the pinned sources" step to fail and
-# tell you what it needs. That step is deliberately explicit about this rather
-# than guessing.
+# Pinned revisions, read from scripts/builder/profiles/bluewake.sh so this file
+# cannot drift from the builder's own pins.
 
 on:
   workflow_dispatch:
     inputs:
       disc_url:
-        description: 'HTTPS URL of the GZLE01 USA rev 0 disc image'
-        required: true
+        description: 'GZLE01 disc image URL. Needed ONCE to seed the cache; blank afterwards.'
+        required: false
+        default: ''
       profile_url:
         description: 'Optional HTTPS URL of a .profdata to optimize against'
         required: false
@@ -57,12 +64,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
-      # Matches the NDK the local Android build uses (29.0.14206865); r27c is
-      # the closest published tag. Bump if the module fails to link.
       NDK_VERSION: r27c
       ABI: arm64-v8a
       MODULE: gGZLE01_recomp
       OUT: build/device
+      # The builder's pins (scripts/builder/profiles/bluewake.sh).
+      RECOMPCORE_URL: https://github.com/elliotttate/RecompCore.git
+      RECOMPCORE_SHA: 8ab24daee9c641634fda5cac30389ad4b2cfda5e
+      DOLRECOMP_SHA: b8b534591cba8ca7cd43943a655ee6e2591cf5de
 
     steps:
       - name: Checkout
@@ -77,67 +86,93 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq cmake ninja-build git curl python3 unzip
+          sudo apt-get install -y -qq cmake ninja-build git curl python3
           cmake --version
           ninja --version
 
-      - name: Cache the pinned sources and the generated composite
+      # One cache entry for both the pinned sources and the generated composite.
+      # The key includes the patch list, because applying the patches changes
+      # the tree and the composite generator is not the only thing that can
+      # invalidate it. ref/recompcore is a git checkout with an applied patch
+      # set, so caching the working tree (not just the clone) is what saves the
+      # slow part.
+      # Caches ref/recompcore (113 MB) and the generated composite (877 MB), and
+      # the extracted game files (12 MB) that generate_composite.py reads its
+      # REL binaries from. Deliberately NOT caching $OUT/translated: it is
+      # 878 MB of intermediate C that nothing after the generate step reads, and
+      # caching it would nearly double the entry for no benefit. That brings the
+      # entry to about 1 GB, comfortably inside the 10 GB per-repository limit.
+      - name: Restore the pinned sources and the composite
         uses: actions/cache@v4
         with:
           path: |
             ref/recompcore
-            build/device/composite-src
-          key: pgo-inputs-${{ hashFiles('config/recompcore-patches.json') }}
-        # Warm runs skip the dependency fetch, the extract, the translate and the
-        # composite generation, and go straight to compiling. The cache key is
-        # the RecompCore patch list: the disc is pinned to one revision, so the
-        # only things that can invalidate the generated tree are the translator
-        # pin and the composite generator.
+            ${{ env.OUT }}/composite-src
+            ${{ env.OUT }}/game
+          key: pgo-tree-${{ hashFiles('config/recompcore-patches.json', 'scripts/generate_composite.py', 'scripts/apply_recompcore_patches.py') }}
 
+      # The cold path. On any later run the cache above has already restored
+      # ref/recompcore, the extracted game files and the generated composite, and
+      # this step short-cluits.
       - name: Fetch the pinned RecompCore sources
-        # The builder fetches these itself on first run; there is no offline
-        # copy in this repository. If this step is skipped by a warm cache this
-        # is a no-op.
         run: |
           set -euo pipefail
-          if [ -d ref/recompcore/GXRuntime ]; then
-            echo "ref/recompcore present (cached)"
-          else
-            echo "::error::ref/recompcore is not present and this workflow cannot fetch it."
-            echo "::error::Run scripts/android/build.sh --source-only on a machine that has it, then"
-            echo "::error::add ref/recompcore to the cache (or to a private git submodule) before retrying."
+          if [ "$(git -C ref/recompcore rev-parse HEAD 2>/dev/null || echo none)" = "$RECOMPCORE_SHA" ]; then
+            echo "ref/recompcore already at $RECOMPCORE_SHA (from cache)"
+            exit 0
+          fi
+          echo "fetching RecompCore $RECOMPCORE_SHA from $RECOMPCORE_URL"
+          rm -rf ref/recompcore
+          git clone --quiet "$RECOMPCORE_URL" ref/recompcore
+          git -C ref/recompcore checkout --quiet --detach "$RECOMPCORE_SHA"
+          git -C ref/recompcore submodule sync --quiet -- DolRecomp
+          git -C ref/recompcore submodule update --init --depth 1 -- DolRecomp
+          if [ "$(git -C ref/recompcore/DolRecomp rev-parse HEAD)" != "$DOLRECOMP_SHA" ]; then
+            echo "::error::DolRecomp is not at the pinned $DOLRECOMP_SHA"
             exit 1
           fi
-
-      - name: Fetch the disc image
-        env:
-          DISC_URL: ${{ github.event.inputs.disc_url }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/disc"
-          # -L because the URL is usually a redirect to object storage.
-          curl -fsSL -o "$RUNNER_TEMP/disc/GZLE01.iso" "$DISC_URL"
-          ls -la "$RUNNER_TEMP/disc/GZLE01.iso"
-          shasum -a 256 "$RUNNER_TEMP/disc/GZLE01.iso"
+          # The same patch application the builder does in profile_dependencies.
+          # Without it the module compiles against unpatched RecompCore and the
+          # result is not the module the phone has been running.
+          python3 scripts/apply_recompcore_patches.py
+          echo "recompcore: $(git -C ref/recompcore rev-parse HEAD)"
+          echo "dolrecomp:  $(git -C ref/recompcore/DolRecomp rev-parse HEAD)"
 
       - name: Extract, translate and generate the composite
+        env:
+          DISC_URL: ${{ github.event.inputs.disc_url }}
         run: |
           set -euo pipefail
           if [ -f "$OUT/composite-src/generated.h" ]; then
             echo "composite already cached; skipping extract, translate and generate"
             exit 0
           fi
-          # The same three functions the local builder runs, in the same order,
-          # with the same arguments (scripts/builder/profiles/bluewake.sh).
-          # profile_extract verifies the disc is GZLE01 revision 0 and refuses
-          # anything else, so a wrong image fails here in seconds.
+          if [ -z "$DISC_URL" ]; then
+            cat >&2 <<'EOF'
+          ::error::No composite in the cache and no disc_url given.
+          ::error::This run needs the disc exactly once: it extracts, translates and
+          ::error::generates the 877 MB composite, then caches it. Every run after
+          ::error::this one is a cache hit and needs no disc at all.
+          ::error::Re-run with disc_url set to a private HTTPS URL of a GZLE01 USA rev 0 image.
+          EOF
+            exit 1
+          fi
+          mkdir -p "$OUT"
+          # -L because the URL is usually a redirect to object storage.
+          curl -fsSL -o "$RUNNER_TEMP/GZLE01.iso" "$DISC_URL"
+          shasum -a 256 "$RUNNER_TEMP/GZLE01.iso"
+          rm -f "$RUNNER_TEMP/GZLE01.iso"   # do not let it reach the cache
+
+          # profile_extract: builds the project's own disc reader, which checks
+          # the disc ID and the executable hash and refuses any other revision.
           clang -O2 -o "$RUNNER_TEMP/disc_extract" \
             scripts/ios/disc_extract.c apple/ios/src/disc_import.c apple/ios/src/disc_sha1.c \
             -Iapple/ios/src
-          "$RUNNER_TEMP/disc_extract" "$RUNNER_TEMP/disc/GZLE01.iso" "$OUT/game"
+          "$RUNNER_TEMP/disc_extract" "$RUNNER_TEMP/GZLE01.iso" "$OUT/game"
           [ "$(ls "$OUT/game/rels" | wc -l | tr -d ' ')" = 415 ] \
             || { echo "::error::expected 415 RELs"; exit 1; }
 
+          # profile_translate
           cmake -S ref/recompcore/DolRecomp -B "$OUT/dolrecomp" -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build "$OUT/dolrecomp" --target dolrecomp -j "$(nproc)"
           rm -rf "$OUT/translated" && mkdir -p "$OUT/translated/dol" "$OUT/translated/rels"
@@ -146,6 +181,7 @@ jobs:
           "$OUT/dolrecomp/dolrecomp" --gamecube --backend c --cpu gekko \
             --rel-base 0xC0400000 "$OUT/game/rels" "$OUT/translated/rels" -j "$(nproc)"
 
+          # profile_generate
           rm -rf "$OUT/composite-src"
           python3 scripts/generate_composite.py \
             --dol-dir "$OUT/translated/dol/generated" \
@@ -153,6 +189,7 @@ jobs:
             --rels-bin-dir "$OUT/game/rels" \
             --main-dol "$OUT/game/main.dol" \
             --output-dir "$OUT/composite-src"
+          python3 scripts/ios/composite_manifest.py "$OUT/composite-src"
           ls "$OUT/composite-src" | head
 
       - name: Configure the module
@@ -163,7 +200,7 @@ jobs:
           # Either COMPOSITE_PGO_INSTRUMENT_DIR (collection) or
           # COMPOSITE_PGO_PROFILE_DIR (optimized), never both. Both are applied
           # per source in cmake/composite/CMakeLists.txt, so only the ten hot
-          # chunks carry them and the other 738 compile as a plain -O2 build.
+          # chunks carry them; the other 738 compile as a plain -O2 build.
           extra=()
           if [ -n "$PROFILE_URL" ]; then
             curl -fsSL -o "$RUNNER_TEMP/profile.profdata" "$PROFILE_URL"
@@ -185,9 +222,6 @@ jobs:
       - name: Build the module
         run: |
           set -euo pipefail
-          # The whole point of this workflow: -j $(nproc) on a runner with more
-          # cores and more memory than a laptop, so the ten instrumented chunks
-          # are minutes each rather than ninety.
           cmake --build "$OUT/composite-pgo" --target "$MODULE" -j "$(nproc)" \
             2>&1 | tee build.log
           ls -la "$OUT/composite-pgo/$MODULE.so"
@@ -202,8 +236,7 @@ jobs:
           install -m 644 "$OUT/composite-pgo/$MODULE.so" "$OUT/$MODULE-stripped.so"
           # --strip-debug drops the ~740 MB of debug info and keeps the symbol
           # table, which the audit and any later profile step need for function
-          # names. This is the same file the APK ships, at a few hundred MB
-          # rather than over a gigabyte.
+          # names. This is the file the APK ships.
           "$strip_bin" --strip-debug "$OUT/$MODULE-stripped.so"
           mkdir -p "$OUT/pkg"
           cp "$OUT/$MODULE-stripped.so" "$OUT/pkg/lib$MODULE.so"
@@ -218,8 +251,8 @@ jobs:
           {
             echo "### Android PGO module"
             echo ""
-            echo "- variant: $([ -n "$PROFILE_URL" ] && echo 'profile-optimized' || echo instrumented)"
-            echo "- profile: $([ -n "$PROFILE_URL" ] && echo 'supplied' || echo 'none (collection build)')"
+            echo "- variant: $([ -n "$PROFILE_URL" ] && echo profile-optimized || echo instrumented)"
+            echo "- composite: $([ -f "$OUT/composite-src/generated.h" ] && echo 'cached or generated' || echo missing)"
             echo "- unstripped: $(stat -c %s "$OUT/composite-pgo/$MODULE.so" 2>/dev/null || echo n/a) bytes"
             echo "- stripped:   $(stat -c %s "$OUT/$MODULE-stripped.so" 2>/dev/null || echo n/a) bytes"
           } >> "$GITHUB_STEP_SUMMARY"
